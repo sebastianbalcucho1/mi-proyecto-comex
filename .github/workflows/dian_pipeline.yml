@@ -1,0 +1,32 @@
+name: DIAN Comex Extraction Pipeline
+
+on:
+  schedule:
+    # Se ejecuta de forma automática todos los lunes a las 5:00 AM UTC
+    - cron: '0 5 * * 1' 
+  workflow_dispatch: 
+    # Habilita un botón en la interfaz de GitHub para ejecutarlo manualmente cuando quieras
+
+jobs:
+  extract_and_push:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 1. Descargar código del repositorio
+      uses: actions/checkout@v4
+
+    - name: 2. Configurar entorno oficial de Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: 3. Instalar dependencias del sistema y navegadores headless
+      run: |
+        pip install requests playwright
+        playwright install chromium
+
+    - name: 4. Ejecutar el Scraper Automatizado hacia Databricks
+      env:
+        DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+        DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      run: python scraper_dian.py
