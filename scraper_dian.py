@@ -1,8 +1,13 @@
 import os
 import time
 import requests
+import urllib3
 from playwright.sync_api import sync_playwright
 
+# Desactivar advertencias de certificados SSL inseguros
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Configuración del entorno e inyección a Databricks
 DATABRICKS_HOST = os.environ.get("DATABRICKS_HOST")
 DATABRICKS_TOKEN = os.environ.get("DATABRICKS_TOKEN")
 VOLUME_PATH = "/Volumes/workspace/comex/comex_stage/bronze"
@@ -14,50 +19,51 @@ def ejecutar_pipeline_interactivo():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
     with sync_playwright() as p:
-        print("🤖 Levantando Chromium Headless...")
+        print("🤖 [LOG] Levantando Chromium Headless en GitHub...", flush=True)
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = context.new_page()
         
-        print("🌐 Navegando a la suite de Comercio Exterior de la DIAN...")
+        print("🌐 [LOG] Conectando a la URL oficial de la DIAN...", flush=True)
         page.goto(URL_DIAN, timeout=90000)
-        page.wait_for_load_state("networkidle")
         
-        # PASO 1: Clic en el acordeón principal "Bases Estadísticas de Importaciones"
-        print("➡️ Pasos de navegación: Abriendo sección principal de Importaciones...")
+        print("⏳ [LOG] Esperando la carga base del DOM estructural...", flush=True)
+        page.wait_for_load_state("domcontentloaded")
+        time.sleep(5)  # Pausa técnica de estabilización para SharePoint
+        
+        print("➡️ [LOG] Pasos de navegación: Abriendo acordeón de 'Bases Estadísticas de Importaciones'...", flush=True)
         seccion_importaciones = page.locator("text=Bases Estadísticas de Importaciones").first
         seccion_importaciones.click()
-        time.sleep(2)
+        time.sleep(3)
         
-        # PASO 2: Identificar los bloques de años disponibles en el DOM
-        # Buscamos elementos que comiencen con la palabra 'Año'
-        bloques_anios = page.locator("//span[contains(text(), 'Año') or contains(text(), 'Año')] | //a[contains(text(), 'Año')]").all()
-        print(f"📊 Se detectaron {len(bloques_anios)} bloques anuales en la grilla.")
+        print("🔍 [LOG] Escaneando la grilla web buscando elementos de tipo 'Año'...", flush=True)
+        # Selector híbrido para capturar los nodos de la tabla dinámica
+        bloques_todos = page.locator(".ms-commentall-title, .ms-gb, a, span").all()
+        bloques_anios = [b for b in bloques_todos if "año" in str(b.inner_text()).lower()]
         
-        # Iteramos de forma estructurada por cada año visible
+        print(f"📊 [LOG] Se detectaron {len(bloques_anios)} nodos de años potenciales.", flush=True)
+        
         for i in range(len(bloques_anios)):
             try:
                 nodo_anio = bloques_anios[i]
                 texto_anio = nodo_anio.inner_text().strip()
-                print(f"\n📂 Expandiendo nodo: {texto_anio}")
                 
-                # Clic en el año para desplegar los archivos mensuales (PASO 2 de tu flujo)
+                print(f"\n📂 [PROCESANDO] Expandiendo el nodo dinámico: {texto_anio}", flush=True)
                 nodo_anio.click()
-                time.sleep(3) # Espera obligatoria para que SharePoint cargue los elementos hijos
+                time.sleep(4)  # Espera para que SharePoint renderice los archivos mensuales hijos
                 
-                # PASO 3: Capturar los enlaces de los archivos que se acaban de desplegar debajo
-                # Filtramos los elementos <a> que tengan palabras clave de importaciones o meses y que pertenezcan a la vista activa
-                enlaces_mensuales = page.locator("a").all()
+                # Capturamos todas las etiquetas de enlace generadas abajo
+                enlaces_candidatos = page.locator("a").all()
                 
-                for el in enlaces_mensuales:
+                for el in enlaces_candidatos:
                     texto_mes = el.inner_text().strip()
                     href = el.get_attribute("href")
                     
-                    # Si el texto coincide con la estructura de tu captura (ej: 12_Importaciones_2024_Diciembre)
-                    if texto_mes and "importaciones" in texto_mes.lower() and ("sharepoint" in str(href).lower() or href == "" or "#" in str(href)):
-                        print(f"   ⬇️ Archivo mensual detectado: '{texto_mes}'. Iniciando descarga...")
+                    # Filtro semántico basado en el patrón real: '12_Importaciones_2024_Diciembre'
+                    if texto_mes and "importaciones" in texto_mes.lower():
+                        print(f"   ⬇️ [DETECTADO] Archivo mensual: '{texto_mes}'. Disparando descarga...", flush=True)
                         
-                        # Capturamos el evento de descarga nativo de SharePoint al hacer clic (PASO 4 de tu flujo)
+                        # Capturar el flujo de bytes directamente mediante el evento del navegador
                         with page.expect_download(timeout=60000) as download_info:
                             el.click()
                         
@@ -65,15 +71,15 @@ def ejecutar_pipeline_interactivo():
                         nombre_archivo_final = f"{texto_mes.replace(' ', '_')}.zip"
                         ruta_local = os.path.join(OUTPUT_DIR, nombre_archivo_final)
                         
-                        # Guardamos el archivo en el contenedor de GitHub
+                        # Persistir temporalmente en el contenedor de GitHub
                         download.save_as(ruta_local)
                         peso_mb = round(os.path.getsize(ruta_local) / (1024 * 1024), 2)
-                        print(f"   ✅ Archivo en GitHub: {nombre_archivo_final} ({peso_mb} MB)")
+                        print(f"   ✅ [DESCARGADO] Archivo en GitHub: {nombre_archivo_final} ({peso_mb} MB)", flush=True)
                         
                         # ==============================================================================
-                        # INYECCIÓN INMEDIATA A DATABRICKS VIA API REST
+                        # INYECCIÓN A LA API DE ARCHIVOS DE DATABRICKS
                         # ==============================================================================
-                        print(f"   🚀 Transfiriendo a Unity Catalog Volume...")
+                        print(f"   🚀 [API] Transfiriendo binario a Unity Catalog Volume...", flush=True)
                         host_limpio = DATABRICKS_HOST.rstrip("/")
                         url_api = f"{host_limpio}/api/2.0/fs/files{VOLUME_PATH}/{nombre_archivo_final}"
                         
@@ -88,23 +94,23 @@ def ejecutar_pipeline_interactivo():
                         response = requests.put(url_api, headers=headers_db, data=archivo_binario)
                         
                         if response.status_code in [200, 201]:
-                            print(f"   🔥 Inyección Completa en Bronze: {nombre_archivo_final}")
+                            print(f"   🔥 [ÉXITO] {nombre_archivo_final} inyectado correctamente en Capa Bronze.", flush=True)
                         else:
-                            print(f"   ⚠️ Error en API Databricks (Status {response.status_code})")
+                            print(f"   ⚠️ [ALERTA] API Databricks devolvió código HTTP {response.status_code} | Detalle: {response.text}", flush=True)
                             
-                        # Limpieza de disco local inmediato
+                        # Limpieza del disco local de GitHub para el siguiente mes
                         os.remove(ruta_local)
-                
-                # Volvemos a hacer clic en el año para colapsarlo y mantener limpio el DOM antes del siguiente
+                        
+                # Colapsamos el año para limpiar la vista y el DOM antes del siguiente ciclo
                 nodo_anio.click()
                 time.sleep(1)
                 
             except Exception as e:
-                print(f"🚨 No se pudo procesar un elemento de la grilla debido a: {str(e)}")
+                print(f"🚨 [ERROR] Falla en iteración de elemento de la grilla: {str(e)}", flush=True)
                 continue
                 
         browser.close()
-        print("\n🏁 Pipeline de extracción interactiva finalizado con éxito.")
+        print("\n🏁 [FIN] Pipeline de extracción interactiva finalizado con éxito.", flush=True)
 
 if __name__ == "__main__":
     ejecutar_pipeline_interactivo()
