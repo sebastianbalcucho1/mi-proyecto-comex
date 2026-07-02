@@ -1,5 +1,6 @@
 import os
 import time
+import re
 import requests
 import urllib3
 from playwright.sync_api import sync_playwright
@@ -40,16 +41,14 @@ def ejecutar_pipeline_interactivo():
         print("⏳ [LOG] Esperando a que SharePoint renderice la grilla interna de años...", flush=True)
         try:
             page.wait_for_selector(".ms-gb", timeout=15000)
-            print("✅ [LOG] Grilla de SharePoint detectada.", flush=True)
+            print("✅ [LOG] Grilla de SharePoint detectada con éxito.", flush=True)
         except Exception:
-            print("⚠️ [WARN] No se detectó la clase .ms-gb, continuando con estrategia adaptativa...", flush=True)
+            print("⚠️ [WARN] Tiempo de espera agotado para .ms-gb, continuando por contingencia...", flush=True)
         
         time.sleep(3)
         
-        print("🔍 [LOG] Escaneando la grilla web buscando nodos de tipo 'Año'...", flush=True)
-        # Apuntamos específicamente a las filas agrupadoras de SharePoint (.ms-gb) que contienen los años
+        # Identificamos los bloques contenedores anuales
         bloques_todos = page.locator(".ms-gb").all()
-        
         bloques_anios = []
         textos_vistos = set()
         
@@ -65,7 +64,10 @@ def ejecutar_pipeline_interactivo():
             except Exception:
                 continue
         
-        print(f"📊 [LOG] Se detectaron {len(bloques_anios)} nodos de años únicos y visibles: {list(textos_vistos)}", flush=True)
+        print(f"📊 [LOG] Se detectaron {len(bloques_anios)} nodos de años únicos y visibles.", flush=True)
+        
+        # REGEX PRECISA: Machea exactamente '12_Importaciones_2024_Diciembre' o '05_Importaciones_2024_Mayo'
+        patron_mensual = re.compile(r"^\d{2}_Importaciones_\d{4}_\w+", re.IGNORECASE)
         
         # Iteramos sobre los años encontrados
         for i in range(len(bloques_anios)):
@@ -75,12 +77,13 @@ def ejecutar_pipeline_interactivo():
                     continue
                     
                 texto_anio = nodo_anio.inner_text().strip().replace("\n", " ")
-                
                 print(f"\n📂 [PROCESANDO] Expandiendo el nodo dinámico: '{texto_anio}'", flush=True)
-                nodo_anio.click()
-                time.sleep(5) # Espera un poco más larga para el despliegue asíncrono de los meses
                 
-                # Buscamos SOLO los enlaces que aparezcan en la grilla y que realmente tengan textos de meses/archivos
+                nodo_anio.click()
+                # Pausa estratégica para dar tiempo a que SharePoint traiga los sub-enlaces mensuales
+                time.sleep(6) 
+                
+                # Escaneamos los enlaces cargados
                 enlaces_candidatos = page.locator("a").all()
                 archivos_en_nodo = 0
                 
@@ -90,26 +93,29 @@ def ejecutar_pipeline_interactivo():
                             continue
                             
                         texto_mes = el.inner_text().strip()
-                        href = el.get_attribute("href") or ""
                         
-                        # FILTRO ESTRICTO: Evitamos el botón del acordeón principal y seleccionamos nombres con patrones de archivos de importaciones
-                        if texto_mes and "importa" in texto_mes.lower() and texto_mes != "Bases Estadísticas de Importaciones":
+                        # Filtramos usando la nueva regla de negocio estricta
+                        if texto_mes and patron_mensual.match(texto_mes):
                             archivos_en_nodo += 1
-                            print(f"   ⬇️ [DETECTADO] Archivo mensual real: '{texto_mes}'. Disparando descarga...", flush=True)
+                            print(f"   ⬇️ [DETECTADO] Archivo mensual válido: '{texto_mes}'. Descargando...", flush=True)
                             
-                            with page.expect_download(timeout=60000) as download_info:
+                            # Capturamos la descarga mediante el evento de Playwright
+                            with page.expect_download(timeout=90000) as download_info:
                                 el.click()
                             
                             download = download_info.value
+                            # Normalizamos el nombre (quitamos espacios si los hay)
                             nombre_archivo_final = f"{texto_mes.replace(' ', '_')}.zip"
                             ruta_local = os.path.join(OUTPUT_DIR, nombre_archivo_final)
                             
                             download.save_as(ruta_local)
                             peso_mb = round(os.path.getsize(ruta_local) / (1024 * 1024), 2)
-                            print(f"   ✅ [DESCARGADO] Archivo en GitHub: {nombre_archivo_final} ({peso_mb} MB)", flush=True)
+                            print(f"   ✅ [DESCARGADO] Guardado temporal local: {nombre_archivo_final} ({peso_mb} MB)", flush=True)
                             
-                            # Inyección a la API de Databricks
-                            print(f"   🚀 [API] Transfiriendo binario a Unity Catalog Volume...", flush=True)
+                            # ==============================================================================
+                            # INYECCIÓN DIRECTA A DATABRICKS VIA API REST
+                            # ==============================================================================
+                            print(f"   🚀 [API Databricks] Transfiriendo binario a Unity Catalog Volume...", flush=True)
                             host_limpio = DATABRICKS_HOST.rstrip("/")
                             url_api = f"{host_limpio}/api/2.0/fs/files{VOLUME_PATH}/{nombre_archivo_final}"
                             
@@ -124,27 +130,30 @@ def ejecutar_pipeline_interactivo():
                             response = requests.put(url_api, headers=headers_db, data=archivo_binario)
                             
                             if response.status_code in [200, 201]:
-                                print(f"   🔥 [ÉXITO] {nombre_archivo_final} inyectado correctamente en Capa Bronze.", flush=True)
+                                print(f"   🔥 [ÉXITO] {nombre_archivo_final} inyectado correctamente en la Capa Bronze.", flush=True)
                             else:
-                                print(f"   ⚠️ [ALERTA] API Databricks devolvió código {response.status_code}", flush=True)
+                                print(f"   ⚠️ [ALERTA] API Databricks devolvió código HTTP {response.status_code} | Detalle: {response.text}", flush=True)
                                 
+                            # Eliminación local inmediata
                             os.remove(ruta_local)
+                            
                     except Exception as e_enlace:
+                        print(f"   ❌ Error procesando enlace individual: {str(e_enlace)}", flush=True)
                         continue
                 
                 if archivos_en_nodo == 0:
-                    print(f"   ℹ️ El nodo '{texto_anio}' no expuso sub-enlaces de importaciones en este ciclo.", flush=True)
+                    print(f"   ℹ️ El nodo '{texto_anio}' no expuso sub-enlaces que cumplan el patrón exacto en este ciclo.", flush=True)
                 
-                # Volvemos a hacer clic para colapsar y mantener limpio el DOM visual
+                # Colapsamos el año para limpiar el DOM antes de pasar al siguiente
                 nodo_anio.click()
                 time.sleep(2)
                 
             except Exception as e:
-                print(f"🚨 [ERROR] Falla en iteración del año: {str(e)}", flush=True)
+                print(f"🚨 [ERROR] Falla estructural en la iteración del año: {str(e)}", flush=True)
                 continue
                 
         browser.close()
-        print("\n🏁 [FIN] Pipeline de extracción interactiva finalizado con éxito.", flush=True)
+        print("\n🏁 [FIN] Pipeline de extracción masiva histórica finalizado con éxito.", flush=True)
 
 if __name__ == "__main__":
     ejecutar_pipeline_interactivo()
