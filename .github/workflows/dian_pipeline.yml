@@ -5,7 +5,7 @@ on:
     # Se ejecuta de forma automática todos los lunes a las 5:00 AM UTC
     - cron: '0 5 * * 1' 
   workflow_dispatch: 
-    # Habilita un botón en la interfaz de GitHub para ejecutarlo manualmente cuando quieras
+    # Habilita el botón manual en la interfaz de GitHub Actions
 
 jobs:
   extract_and_push:
@@ -22,11 +22,12 @@ jobs:
 
     - name: 3. Instalar dependencias del sistema y navegadores headless
       run: |
-        pip install requests playwright
+        pip install requests playwright urllib3
         playwright install chromium
 
     - name: 4. Ejecutar el Scraper Automatizado hacia Databricks
       env:
         DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
         DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        PYTHONUNBUFFERED: 1  # <-- FORZA EL LOGUEO EN TIEMPO REAL SIN BUFFER
       run: python scraper_dian.py
