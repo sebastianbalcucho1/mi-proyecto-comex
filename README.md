@@ -24,10 +24,10 @@ Deterministic Streaming Ingestion (requests): Instead of fighting complex asynch
 ```
 
 ## Tech Stack
-Orchestrator: GitHub Actions
-Core Language: Python 3.10+
-Key Libraries: requests (for chunked binary streams), urllib3 (SSL resilience), re (deterministic pattern matching).
-Target Platform: Databricks Unity Catalog (Bronze Stage Volume).
+* Orchestrator: GitHub Actions
+* Core Language: Python 3.10+
+* Key Libraries: requests (for chunked binary streams), urllib3 (SSL resilience), re (deterministic pattern matching).
+* Target Platform: Databricks Unity Catalog (Bronze Stage Volume).
 
 ## Repository Structure
 ```text
