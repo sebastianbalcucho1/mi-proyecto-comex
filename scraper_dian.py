@@ -1,90 +1,80 @@
 import os
 import requests
-from playwright.sync_api import sync_playwright
+import urllib3
+import datetime
 
-# Captura de credenciales seguras desde el entorno de GitHub
+# Desactivar alertas de certificados SSL antiguos
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 DATABRICKS_HOST = os.environ.get("DATABRICKS_HOST")
 DATABRICKS_TOKEN = os.environ.get("DATABRICKS_TOKEN")
 VOLUME_PATH = "/Volumes/workspace/comex/comex_stage/bronze"
 
-URL_DIAN = "https://www.dian.gov.co/dian/cifras/Paginas/Bases-Estadisticas-de-Comercio-Exterior-Importaciones-y-Exportaciones.aspx"
+URL_BASE_DIAN = "https://www.dian.gov.co/dian/cifras/BasesEstadisticas/Importaciones"
 OUTPUT_DIR = "./downloads"
 
-def extraer_y_subir():
+def descargar_e_inyectar_historico_dinamico():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
-    with sync_playwright() as p:
-        print("🤖 Iniciando navegador Chromium en entorno seguro de GitHub...")
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-        page = context.new_page()
-        
-        print("🌐 Navegando a la URL oficial de la DIAN...")
-        page.goto(URL_DIAN, timeout=60000)
-        
-        print("⏳ Esperando renderizado de la grilla dinámica de SharePoint...")
-        # Espera explícita a que aparezca la grilla que viste en tu captura
-        page.wait_for_selector("text=Año", timeout=30000)
-        
-        # Mapeamos los enlaces generados en la sesión interactiva
-        enlaces = page.query_selector_all("a")
-        url_descarga = None
-        nombre_archivo = None
-        target_href = None
-        
-        print("🔍 Buscando el archivo más reciente (Año corriente)...")
-        for el in enlaces:
-            href = el.get_attribute("href")
-            texto = el.inner_text().strip()
-            
-            if href and (".zip" in href.lower() or "sharepoint" in href.lower()):
-                # Filtramos por año y palabras clave de importaciones/exportaciones
-                if any(k in texto.lower() or k in href.lower() for k in ["2026", "2025", "importa", "exporta"]):
-                    url_descarga = href if href.startswith("http") else f"https://www.dian.gov.co{href}"
-                    nombre_archivo = f"{texto.replace(' ', '_').replace(':', '')}.zip"
-                    target_href = href
-                    break
-        
-        if not url_descarga:
-            print("⚠️ No se detectaron archivos bajo los filtros iniciales. Abortando.")
-            return
-
-        print(f"🎯 Archivo objetivo identificado: {nombre_archivo}")
-        
-        # Simulación del evento clic para forzar la descarga con cookies de sesión de SharePoint
-        with page.expect_download(timeout=60000) as download_info:
-            page.locator(f"a[href='{target_href}']").first.click()
-        
-        download = download_info.value
+    # CONTROL DE TIEMPO DINÁMICO (Cero Hardcoding)
+    anio_actual = datetime.datetime.now().year
+    anios_a_procesar = list(range(2001, anio_actual + 1))
+    
+    print(f"📚 Iniciando Pipeline Resiliente de Importaciones (Rango: 2001 - {anio_actual})...")
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    
+    for anio in anios_a_procesar:
+        nombre_archivo = f"Importaciones_{anio}.zip"
+        url_descarga = f"{URL_BASE_DIAN}/Importaciones_{anio}.zip"
         ruta_local = os.path.join(OUTPUT_DIR, nombre_archivo)
-        download.save_as(ruta_local)
-        print(f"✅ Archivo descargado en el contenedor local: {ruta_local}")
-        browser.close()
         
-        # ==============================================================================
-        # INYECCIÓN MEDIANTE API REST DE DATABRICKS (Unity Catalog API v2.0)
-        # ==============================================================================
-        print("🚀 Iniciando transferencia directa a la Capa Bronze de Databricks...")
+        print(f"\n⏳ [{anio}] Conectando con el endpoint...")
         
-        # Limpieza de la URL del host para evitar diagonales dobles
-        host_limpio = DATABRICKS_HOST.rstrip("/")
-        url_api = f"{host_limpio}/api/2.0/fs/files{VOLUME_PATH}/{nombre_archivo}"
-        
-        headers = {
-            "Authorization": f"Bearer {DATABRICKS_TOKEN}",
-            "Content-Type": "application/octet-stream"
-        }
-        
-        with open(ruta_local, "rb") as f:
-            archivo_binario = f.read()
-            
-        # Petición PUT nativa para escribir el binario directo en el volumen
-        response = requests.put(url_api, headers=headers, data=archivo_binario)
-        
-        if response.status_code in [200, 201]:
-            print("🔥 ¡Fase de Extracción Completada! El archivo está disponible en Databricks.")
-        else:
-            raise Exception(f"Falla en API Databricks. Código: {response.status_code} | Detalle: {response.text}")
+        try:
+            with requests.get(url_descarga, verify=False, headers=headers, stream=True, timeout=30) as r:
+                if r.status_code == 200:
+                    with open(ruta_local, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=65536):
+                            if chunk:
+                                f.write(chunk)
+                    
+                    peso_mb = round(os.path.getsize(ruta_local) / (1024 * 1024), 2)
+                    print(f"✅ Descargado: {nombre_archivo} ({peso_mb} MB)")
+                    
+                    # Inyección mediante la API de Databricks
+                    host_limpio = DATABRICKS_HOST.rstrip("/")
+                    url_api = f"{host_limpio}/api/2.0/fs/files{VOLUME_PATH}/{nombre_archivo}"
+                    
+                    headers_db = {
+                        "Authorization": f"Bearer {DATABRICKS_TOKEN}",
+                        "Content-Type": "application/octet-stream"
+                    }
+                    
+                    with open(ruta_local, "rb") as f_bin:
+                        archivo_binario = f_bin.read()
+                        
+                    response = requests.put(url_api, headers=headers_db, data=archivo_binario)
+                    
+                    if response.status_code in [200, 201]:
+                        print(f"🚀 {nombre_archivo} indexado con éxito en el Volumen.")
+                    else:
+                        print(f"⚠️ Error API Databricks para {anio}: Status {response.status_code}")
+                    
+                    os.remove(ruta_local)
+                    
+                elif r.status_code == 404:
+                    print(f"ℹ️ El año {anio} no reporta base de datos consolidada (404 Not Found). Saltando.")
+                else:
+                    print(f"❌ Error HTTP {r.status_code} en año {anio}")
+                    
+        except Exception as e:
+            print(f"🚨 Excepción en año {anio}: {str(e)}")
+            continue
+
+    print("\n🏁 Pipeline de extracción finalizado con éxito.")
 
 if __name__ == "__main__":
-    extraer_y_subir()
+    descargar_e_inyectar_historico_dinamico()
