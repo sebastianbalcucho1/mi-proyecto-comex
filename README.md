@@ -1,15 +1,15 @@
-# DIAN Comex Ingestion Pipeline
+# Pipeline de Ingesta de DIAN Comex
 
-An automated, robust, and stateful incremental data pipeline designed to ingest historical and current Customs and Foreign Trade (Import) data directly from the official DIAN (Dirección de Impuestos y Aduanas Nacionales de Colombia) platform into a Databricks Unity Catalog Volume (Bronze Layer).
+Un pipeline de datos incremental, automatizado, robusto y con estado, diseñado para ingerir datos históricos y actuales de Aduanas y Comercio Exterior (Importación) directamente desde la plataforma oficial de DIAN (Dirección de Impuestos y Aduanas Nacionales de Colombia) a un Volumen de Catálogo Databricks Unity (Capa Bronce).
 
-## Project Architecture & Overview
-The pipeline operates in two main orchestration steps, ensuring high efficiency, zero data duplication, and optimal computing resource allocation:
+## Arquitectura y Descripción General del Proyecto
+El pipeline opera en dos pasos principales de orquestación, lo que garantiza una alta eficiencia, cero duplicación de datos y una asignación óptima de recursos informáticos:
 
-* Orchestration & Triggering (GitHub Actions): A weekly cron job triggers a specialized Python scraper inside a headless runner.
+* Orquestación y Activación (GitHub Actions): Una tarea programada semanal (cron job) activa un raspador Python especializado dentro de un ejecutor sin interfaz gráfica.
 
-* Stateful Incremental Audit (Databricks FS API): Before downloading anything, the script queries the Databricks File System API to build a state cache of already ingested files.
+* Auditoría Incremental con Estado (API del Sistema de Archivos de Databricks): Antes de descargar cualquier archivo, el script consulta la API del Sistema de Archivos de Databricks para crear una caché de estado de los archivos ya ingeridos.
 
-Deterministic Streaming Ingestion (requests): Instead of fighting complex asynchrony in SharePoint dynamic grids, the pipeline targets deterministic, predictable static asset endpoints on the DIAN web server. New/missing files are streamed and sent via REST API to Unity Catalog.
+Ingesta de datos en tiempo real (solicitudes): En lugar de lidiar con la compleja asincronía de las cuadrículas dinámicas de SharePoint, la canalización se dirige a puntos finales de recursos estáticos, deterministas y predecibles en el servidor web DIAN. Los archivos nuevos o faltantes se transmiten y envían a través de la API REST al catálogo de Unity.
 
 ```text
 [GitHub Actions Runner] 
@@ -23,39 +23,38 @@ Deterministic Streaming Ingestion (requests): Instead of fighting complex asynch
        └── 3. PUT /api/2.0/fs/files/bronze/file.zip ───────> [Databricks Unity Catalog Volume]
 ```
 
-## Tech Stack
-* Orchestrator: GitHub Actions
-* Core Language: Python 3.10+
-* Key Libraries: requests (for chunked binary streams), urllib3 (SSL resilience), re (deterministic pattern matching).
-* Target Platform: Databricks Unity Catalog (Bronze Stage Volume).
+## Tecnologías utilizadas
+* Orquestador: GitHub Actions
+* Lenguaje principal: Python 3.10+
+* Bibliotecas clave: requests (para flujos binarios fragmentados), urllib3 (resiliencia SSL), re (coincidencia de patrones determinista).
+* Plataforma de destino: Catálogo Databricks Unity (Volumen de la Etapa Bronce).
 
-## Repository Structure
+## Estructura del repositorio
 ```text
 ├── .github/
 │   └── workflows/
-│       └── dian_pipeline.yml     # GitHub Actions workflow configuration (Cron & Manual)
-├── downloads/                    # Temporary container directory for chunked binary stream
-├── scraper_dian.py               # Main pipeline ingestion script (Incremental Logic)
-└── README.md                     # Documentation 
+│       └── dian_pipeline.yml     # Configuración del flujo de trabajo de GitHub Actions (Cron y manual)
+├── downloads/                    # Directorio contenedor temporal para el flujo binario fragmentado
+├── scraper_dian.py               # Script principal de ingesta del pipeline (lógica incremental)
+└── README.md                     # Documentación
 ```
 
+## Lógica principal del pipeline: scraper_dian.py
+El script evita el desperdicio computacional por carga completa al aplicar un patrón de ingesta con estado:
+* Idempotencia: El pipeline se puede ejecutar varias veces al día sin cargar binarios duplicados ni fragmentos superpuestos.
+* Eficiencia de red: Mapea los patrones de nombres de archivo utilizados de forma nativa por DIAN, que coinciden con la estructura estricta: MM_Importaciones_AAAA_NombreDelMes.zip (p. ej., 12_Importaciones_2024_Diciembre.zip).
 
+* Resiliencia: Incluye una doble puerta de validación (que gestiona el estado HTTP 204 Sin contenido nativo de Databricks y los problemas con el certificado SSL de DIAN mediante contextos no verificados de forma segura dentro del ejecutor).
 
-## Core Pipeline Logic: scraper_dian.py
-The script avoids full-load computational waste by enforcing a Stateful Ingestion pattern:
-* Idempotency: The pipeline can be executed multiple times a day without uploading duplicate binaries or overlapping chunks.
-* Network Efficiency: It maps file naming patterns natively used by the DIAN matching the strict structure: MM_Importaciones_YYYY_MonthName.zip (e.g., 12_Importaciones_2024_Diciembre.zip).
-* Resilience: Includes a dual validation gate (handling Databricks native HTTP 204 No Content status and handling DIAN SSL certificate issues using unverified contexts securely inside the runner).
+## Implementación y configuración
+1. **Configuración de secretos de GitHub**
+Para permitir que el ejecutor de GitHub se autentique de forma segura con el plano de control de su espacio de trabajo de Databricks, debe asignar las siguientes variables de entorno en Configuración > Secretos y variables > Acciones:
 
-## Deployment & Configuration
-1. **GitHub Secrets Setup**
-To allow the GitHub runner to authenticate safely against your Databricks Workspace Control Plane, you must map the following environment variables under Settings > Secrets and variables > Actions:
-
-| Secret Name | Description | Example |
+| Nombre Secreto | Descripción | Ejemplo |
 | :--- | :--- | :--- |
-| `DATABRICKS_HOST` | The secure URL endpoint of your Databricks instance. | `https://adb-XXXXXX.cloud.databricks.com` |
-| `DATABRICKS_TOKEN` | Personal Access Token (PAT) with write access to the target Volume. | `dapiXXXXXXXXXXXXXXXXXXXXXXXX` |
+| `DATABRICKS_HOST` | El punto final URL seguro de su instancia de Databricks. | `https://adb-XXXXXX.cloud.databricks.com` |
+| `DATABRICKS_TOKEN` | Token de acceso personal (PAT) con permisos de escritura para el volumen de destino. | `dapiXXXXXXXXXXXXXXXXXXXXXXXX` |
 
-2. **Unity Catalog Destination Target**
-The script targets the following internal path infrastructure by default:
+2. **Destino del catálogo de Unity**
+El script utiliza la siguiente ruta interna de forma predeterminada:
 VOLUME_PATH = "/Volumes/workspace/comex/comex_stage/bronze"
